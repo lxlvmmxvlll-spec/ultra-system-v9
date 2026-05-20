@@ -6,7 +6,15 @@ from aiogram.filters import Command
 import os
 TOKEN = os.getenv("BOT_TOKEN")
 
-bot = Bot(token=TOKEN)
+import os
+from aiogram.client.default import DefaultBotProperties
+
+TOKEN = os.getenv("BOT_TOKEN")
+
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML")
+)
 dp = Dispatcher()
 
 DB = "ultra.db"

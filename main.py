@@ -1,68 +1,148 @@
 import asyncio
 import logging
 import os
+import aiosqlite
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-# Берем токен из переменных окружения (ВАЖНО для Render)
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
 
-# Инициализация бота
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+DB_NAME = "users.db"
+
+
+# ===== БАЗА ДАННЫХ =====
+
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                xp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1
+            )
+        """)
+        await db.commit()
+
+
+async def get_user(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        return await cursor.fetchone()
+
+
+async def create_user(user_id, username):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO users (user_id, username, xp, level) VALUES (?, ?, 0, 1)",
+            (user_id, username)
+        )
+        await db.commit()
+
+
+async def add_xp(user_id, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Получаем текущие данные
+        cursor = await db.execute("SELECT xp, level FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+
+        xp, level = row
+        xp += amount
+
+        # Формула уровня
+        new_level = xp // 100 + 1
+
+        await db.execute(
+            "UPDATE users SET xp = ?, level = ? WHERE user_id = ?",
+            (xp, new_level, user_id)
+        )
+        await db.commit()
+
+        return xp, level, new_level
 
 
 # ===== КОМАНДЫ =====
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    await message.answer(
-        "🚀 Добро пожаловать в ULTRA SYSTEM v9\n\n"
-        "Я помогу тебе прокачать:\n"
-        "🧠 мышление\n"
-        "🗣 речь\n"
-        "⚡ коммуникацию\n\n"
-        "Напиши что-нибудь — начнем 👇"
-    )
+    user = await get_user(message.from_user.id)
 
+    if not user:
+        await create_user(message.from_user.id, message.from_user.username)
 
-@dp.message(Command("help"))
-async def help_handler(message: types.Message):
-    await message.answer(
-        "📌 Команды:\n"
-        "/start — запуск\n"
-        "/help — помощь\n\n"
-        "Просто пиши сообщения — я буду отвечать."
-    )
-
-
-# ===== ОБРАБОТКА СООБЩЕНИЙ =====
-
-@dp.message()
-async def echo_handler(message: types.Message):
-    text = message.text
-
-    # Простая логика (можно расширять)
-    if "привет" in text.lower():
-        await message.answer("Привет 👋 Готов прокачивать тебя")
-    elif "задание" in text.lower():
         await message.answer(
-            "🔥 Задание дня:\n"
-            "Опиши свою цель на 1 год максимально конкретно.\n\n"
-            "Не менее 5 предложений."
+            "🚀 Добро пожаловать в ULTRA SYSTEM v9\n\n"
+            "Ты зарегистрирован!\n"
+            "Начальный уровень: 1\n"
+            "XP: 0\n\n"
+            "Пиши сообщения и прокачивайся 💪"
         )
     else:
-        await message.answer(f"Ты написал: {text}")
+        await message.answer("Ты уже в системе 💪")
+
+
+@dp.message(Command("profile"))
+async def profile_handler(message: types.Message):
+    user = await get_user(message.from_user.id)
+
+    if not user:
+        await message.answer("Сначала напиши /start")
+        return
+
+    user_id, username, xp, level = user
+
+    await message.answer(
+        f"👤 Профиль\n\n"
+        f"Username: @{username}\n"
+        f"Уровень: {level}\n"
+        f"XP: {xp}"
+    )
+
+
+# ===== ОСНОВНАЯ ЛОГИКА =====
+
+@dp.message()
+async def main_handler(message: types.Message):
+    user = await get_user(message.from_user.id)
+
+    if not user:
+        await create_user(message.from_user.id, message.from_user.username)
+
+    # Даем XP
+    xp, old_level, new_level = await add_xp(message.from_user.id, 10)
+
+    response = ""
+
+    # Проверка уровня
+    if new_level > old_level:
+        response += f"🎉 Ты повысил уровень!\nТеперь ты {new_level} уровень!\n\n"
+
+    text = message.text.lower()
+
+    if "задание" in text:
+        response += (
+            "🔥 Задание дня:\n"
+            "Опиши свою цель на 1 год.\n"
+            "Минимум 5 предложений.\n\n"
+            "Ты получишь +20 XP за выполнение (пока вручную 😈)"
+        )
+    else:
+        response += f"💬 Ты написал: {message.text}"
+
+    await message.answer(response)
 
 
 # ===== ЗАПУСК =====
 
 async def main():
-    print("✅ Бот запущен и работает")
+    await init_db()
+    print("✅ Бот с системой уровней запущен")
     await dp.start_polling(bot)
 
 

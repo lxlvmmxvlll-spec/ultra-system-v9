@@ -1,7 +1,9 @@
 import asyncio
 import aiosqlite
 import os
+import threading
 
+from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
@@ -9,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN is not set in environment variables")
+    raise ValueError("BOT_TOKEN not found")
 
 bot = Bot(
     token=TOKEN,
@@ -19,6 +21,13 @@ bot = Bot(
 dp = Dispatcher()
 
 DB = "ultra.db"
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Bot is running!"
 
 
 async def init_db():
@@ -86,7 +95,7 @@ def generate_day(day):
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await create_user(message.from_user.id)
-    await message.answer("🧠 ULTRA SYSTEM запущена\nНапиши /day")
+    await message.answer("🧠 ULTRA SYSTEM v9 запущена")
 
 
 @dp.message(Command("day"))
@@ -100,13 +109,19 @@ async def next_day(message: types.Message):
     current = await get_day(message.from_user.id)
     new_day = current + 1
     await update_day(message.from_user.id, new_day)
-    await message.answer(f"➡️ День: {new_day}")
+    await message.answer(f"➡️ День {new_day}")
 
 
-async def main():
+async def start_bot():
     await init_db()
     await dp.start_polling(bot)
 
 
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    threading.Thread(target=run_flask).start()
+    asyncio.run(start_bot())

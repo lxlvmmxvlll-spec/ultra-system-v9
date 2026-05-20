@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ultra-system-v9
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    runtime: python3.11.9

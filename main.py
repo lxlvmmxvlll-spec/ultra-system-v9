@@ -3,20 +3,31 @@ import logging
 import aiosqlite
 import random
 import datetime
+import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from flask import Flask
 import threading
-import os
 
+from openai import OpenAI
+
+# =========================
+# НАСТРОЙКИ
+# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# =========================
+# FLASK
+# =========================
 app = Flask(__name__)
 
 @app.route('/')
@@ -26,11 +37,11 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=10000)
 
-DB_NAME = "users.db"
-
 # =========================
 # БАЗА
 # =========================
+DB_NAME = "users.db"
+
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -53,7 +64,7 @@ async def create_user(user_id, username):
         await db.commit()
 
 # =========================
-# XP / УРОВНИ
+# XP
 # =========================
 async def add_xp(user_id, amount=10):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -71,38 +82,38 @@ async def add_xp(user_id, amount=10):
 
     return None
 
-async def get_profile(user_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT level, xp FROM users WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone()
-
 # =========================
-# МИССИИ
+# AI КОУЧ
 # =========================
-MISSIONS = [
-    "Скажи комплимент незнакомому человеку",
-    "Задай 3 глубоких вопроса в разговоре",
-    "Расскажи историю на 1 минуту",
-    "Вырази свою точку зрения уверенно",
-    "Поговори с новым человеком"
-]
+def analyze_text(text):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты AI-коуч по коммуникации.\n"
+                        "Анализируй текст пользователя и давай:\n"
+                        "1. Краткую оценку\n"
+                        "2. Ошибки\n"
+                        "3. Как улучшить\n"
+                        "4. 1 конкретный совет\n"
+                        "Отвечай коротко и по делу."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            max_tokens=300
+        )
 
-async def get_mission(user_id):
-    today = str(datetime.date.today())
+        return response.choices[0].message.content
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT last_mission FROM users WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-
-        if row and row[0] == today:
-            return None  # уже была миссия сегодня
-
-        mission = random.choice(MISSIONS)
-
-        await db.execute("UPDATE users SET last_mission = ? WHERE user_id = ?", (today, user_id))
-        await db.commit()
-
-        return mission
+    except Exception as e:
+        return "⚠️ Ошибка AI анализа"
 
 # =========================
 # ХЕНДЛЕРЫ
@@ -112,40 +123,27 @@ async def start_handler(message: types.Message):
     await create_user(message.from_user.id, message.from_user.username)
 
     await message.answer(
-        "🚀 ULTRA SYSTEM v1\n\n"
-        "Ты начинаешь прокачку коммуникации.\n"
-        "Пиши сообщения → получаешь XP 🔥\n\n"
-        "/mission — задание дня\n"
-        "/profile — твой уровень"
+        "🚀 ULTRA SYSTEM AI\n\n"
+        "Теперь я твой AI-коуч.\n"
+        "Пиши сообщения — я буду анализировать твою речь 🧠"
     )
-
-@dp.message(Command("profile"))
-async def profile_handler(message: types.Message):
-    data = await get_profile(message.from_user.id)
-
-    if data:
-        level, xp = data
-        await message.answer(f"👤 Уровень: {level}\n🔥 XP: {xp}/{level*100}")
-
-@dp.message(Command("mission"))
-async def mission_handler(message: types.Message):
-    mission = await get_mission(message.from_user.id)
-
-    if mission:
-        await message.answer(f"🎯 Твоя миссия на сегодня:\n\n{mission}\n\n+50 XP за выполнение")
-    else:
-        await message.answer("✅ Ты уже получил миссию сегодня")
 
 @dp.message()
 async def main_handler(message: types.Message):
     await create_user(message.from_user.id, message.from_user.username)
 
+    # XP
     new_level = await add_xp(message.from_user.id, 10)
 
-    if new_level:
-        await message.answer(f"🎉 Новый уровень: {new_level}!")
+    # AI анализ
+    ai_response = analyze_text(message.text)
 
-    await message.answer("💬 XP +10")
+    reply = f"🧠 Анализ:\n{ai_response}\n\n💬 XP +10"
+
+    if new_level:
+        reply += f"\n🎉 Новый уровень: {new_level}!"
+
+    await message.answer(reply)
 
 # =========================
 # ЗАПУСК
@@ -153,7 +151,6 @@ async def main_handler(message: types.Message):
 async def main():
     await init_db()
 
-    # фикс конфликтов
     await bot.delete_webhook(drop_pending_updates=True)
 
     await dp.start_polling(bot)

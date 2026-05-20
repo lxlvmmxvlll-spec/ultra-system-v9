@@ -1,150 +1,132 @@
 import asyncio
 import logging
-import os
 import aiosqlite
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from flask import Flask
+import threading
+import os
 
-TOKEN = os.getenv("BOT_TOKEN")
+# =========================
+# НАСТРОЙКИ
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# =========================
+# FLASK (для Render)
+# =========================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+# =========================
+# БАЗА ДАННЫХ
+# =========================
 DB_NAME = "users.db"
-
-
-# ===== БАЗА ДАННЫХ =====
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1
-            )
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            level INTEGER DEFAULT 1,
+            xp INTEGER DEFAULT 0
+        )
         """)
         await db.commit()
 
-
-async def get_user(user_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone()
-
-
+# 🔥 ФИКС ЗДЕСЬ
 async def create_user(user_id, username):
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT INTO users (user_id, username, xp, level) VALUES (?, ?, 0, 1)",
-            (user_id, username)
-        )
+        await db.execute("""
+        INSERT OR IGNORE INTO users (user_id, username)
+        VALUES (?, ?)
+        """, (user_id, username))
         await db.commit()
 
-
-async def add_xp(user_id, amount):
+async def add_xp(user_id, amount=10):
     async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем текущие данные
+        await db.execute("""
+        UPDATE users SET xp = xp + ?
+        WHERE user_id = ?
+        """, (amount, user_id))
+        await db.commit()
+
+        # проверка уровня
         cursor = await db.execute("SELECT xp, level FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
 
         xp, level = row
-        xp += amount
 
-        # Формула уровня
-        new_level = xp // 100 + 1
+        if xp >= level * 100:
+            level += 1
+            await db.execute("""
+            UPDATE users SET level = ?, xp = 0
+            WHERE user_id = ?
+            """, (level, user_id))
+            await db.commit()
+            return level
 
-        await db.execute(
-            "UPDATE users SET xp = ?, level = ? WHERE user_id = ?",
-            (xp, new_level, user_id)
-        )
-        await db.commit()
+    return None
 
-        return xp, level, new_level
+async def get_profile(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("""
+        SELECT level, xp FROM users WHERE user_id = ?
+        """, (user_id,))
+        return await cursor.fetchone()
 
-
-# ===== КОМАНДЫ =====
-
+# =========================
+# ХЕНДЛЕРЫ
+# =========================
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
-    user = await get_user(message.from_user.id)
+    await create_user(message.from_user.id, message.from_user.username)
 
-    if not user:
-        await create_user(message.from_user.id, message.from_user.username)
-
-        await message.answer(
-            "🚀 Добро пожаловать в ULTRA SYSTEM v9\n\n"
-            "Ты зарегистрирован!\n"
-            "Начальный уровень: 1\n"
-            "XP: 0\n\n"
-            "Пиши сообщения и прокачивайся 💪"
-        )
-    else:
-        await message.answer("Ты уже в системе 💪")
-
+    await message.answer(
+        "🚀 Добро пожаловать в ULTRA SYSTEM\n\n"
+        "Ты начал путь развития.\n"
+        "Пиши любое сообщение, чтобы получать XP 🔥"
+    )
 
 @dp.message(Command("profile"))
 async def profile_handler(message: types.Message):
-    user = await get_user(message.from_user.id)
+    data = await get_profile(message.from_user.id)
 
-    if not user:
-        await message.answer("Сначала напиши /start")
-        return
-
-    user_id, username, xp, level = user
-
-    await message.answer(
-        f"👤 Профиль\n\n"
-        f"Username: @{username}\n"
-        f"Уровень: {level}\n"
-        f"XP: {xp}"
-    )
-
-
-# ===== ОСНОВНАЯ ЛОГИКА =====
+    if data:
+        level, xp = data
+        await message.answer(f"👤 Уровень: {level}\n🔥 XP: {xp}/100")
 
 @dp.message()
 async def main_handler(message: types.Message):
-    user = await get_user(message.from_user.id)
+    await create_user(message.from_user.id, message.from_user.username)
 
-    if not user:
-        await create_user(message.from_user.id, message.from_user.username)
+    new_level = await add_xp(message.from_user.id, 10)
 
-    # Даем XP
-    xp, old_level, new_level = await add_xp(message.from_user.id, 10)
+    if new_level:
+        await message.answer(f"🎉 Новый уровень: {new_level}!")
 
-    response = ""
+    await message.answer("💬 XP +10")
 
-    # Проверка уровня
-    if new_level > old_level:
-        response += f"🎉 Ты повысил уровень!\nТеперь ты {new_level} уровень!\n\n"
-
-    text = message.text.lower()
-
-    if "задание" in text:
-        response += (
-            "🔥 Задание дня:\n"
-            "Опиши свою цель на 1 год.\n"
-            "Минимум 5 предложений.\n\n"
-            "Ты получишь +20 XP за выполнение (пока вручную 😈)"
-        )
-    else:
-        response += f"💬 Ты написал: {message.text}"
-
-    await message.answer(response)
-
-
-# ===== ЗАПУСК =====
-
+# =========================
+# ЗАПУСК
+# =========================
 async def main():
     await init_db()
-    print("✅ Бот с системой уровней запущен")
     await dp.start_polling(bot)
 
-
 if __name__ == "__main__":
+    threading.Thread(target=run_flask).start()
     asyncio.run(main())

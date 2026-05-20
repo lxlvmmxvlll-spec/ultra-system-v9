@@ -1,4 +1,5 @@
 import asyncio
+import aiosqlite
 import os
 
 from aiogram import Bot, Dispatcher, types
@@ -8,7 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN is missing")
+    raise ValueError("BOT_TOKEN is not set in environment variables")
 
 bot = Bot(
     token=TOKEN,
@@ -17,52 +18,95 @@ bot = Bot(
 
 dp = Dispatcher()
 
-# ======================
-# ULTRA SYSTEM SIMPLE VERSION
-# ======================
+DB = "ultra.db"
 
-def generate_day(day: int):
+
+async def init_db():
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            day INTEGER DEFAULT 1
+        )
+        """)
+        await db.commit()
+
+
+async def create_user(user_id):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id, day) VALUES (?, 1)",
+            (user_id,)
+        )
+        await db.commit()
+
+
+async def get_day(user_id):
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute(
+            "SELECT day FROM users WHERE user_id=?",
+            (user_id,)
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 1
+
+
+async def update_day(user_id, day):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "UPDATE users SET day=? WHERE user_id=?",
+            (day, user_id)
+        )
+        await db.commit()
+
+
+def generate_day(day):
     return f"""
-🧠 <b>ULTRA SYSTEM v9</b>
+🧠 ULTRA SYSTEM v9
 
-📅 День {day}
+📅 ДЕНЬ {day}
 
-🎯 Задача:
+🎯 ЦЕЛЬ:
 Развитие речи и мышления
 
-🎤 Практика:
-Объясни свою цель в жизни за 2 минуты
+🎤 ЗАДАНИЕ:
+Объясни себя за 2 минуты
 
-💬 Симуляция:
-Убедить собеседника в своей точке зрения
+💬 СИМУЛЯЦИЯ:
+Убеди собеседника
 
-🌍 Миссия:
-Начать разговор с человеком
+🌍 МИССИЯ:
+Начни разговор с человеком
 
-📊 Отчёт:
-Напиши результат
+📊 ОТЧЁТ:
+Опиши результат
 """
 
-user_day = {}
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    user_day[message.from_user.id] = 1
-    await message.answer("🧠 ULTRA SYSTEM v9 запущена\nНапиши /day")
+    await create_user(message.from_user.id)
+    await message.answer("🧠 ULTRA SYSTEM запущена\nНапиши /day")
+
 
 @dp.message(Command("day"))
 async def day(message: types.Message):
-    day_num = user_day.get(message.from_user.id, 1)
-    await message.answer(generate_day(day_num))
+    d = await get_day(message.from_user.id)
+    await message.answer(generate_day(d))
+
 
 @dp.message(Command("next"))
 async def next_day(message: types.Message):
-    uid = message.from_user.id
-    user_day[uid] = user_day.get(uid, 1) + 1
-    await message.answer(f"➡️ День: {user_day[uid]}")
+    current = await get_day(message.from_user.id)
+    new_day = current + 1
+    await update_day(message.from_user.id, new_day)
+    await message.answer(f"➡️ День: {new_day}")
+
 
 async def main():
+    await init_db()
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
